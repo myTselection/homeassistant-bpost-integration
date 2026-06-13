@@ -7,7 +7,8 @@
         "description": "Fill in the credentials for your bpost account. The integration signs in through the same bpost account page used by Mijn bpost.",
         "data": {
           "email": "Email address",
-          "password": "Password"
+          "password": "Password",
+          "postal_code": "Postal code"
         }
       },
       "reauth_confirm": {

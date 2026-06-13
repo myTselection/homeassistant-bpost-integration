@@ -14,6 +14,7 @@ from .const import (
     ATTR_PARCELS,
     BINARY_SENSOR_EXPECTING_PARCEL,
     CONF_PASSWORD,
+    CONF_POSTAL_CODE,
     SENSOR_PARCELS_DUE,
 )
 
@@ -54,6 +55,7 @@ class BpostEntryData:
             session=async_get_clientsession(hass),
             email=entry.data[CONF_EMAIL],
             password=entry.data[CONF_PASSWORD],
+            postal_code=entry.data.get(CONF_POSTAL_CODE),
         )
 
         async def async_update_data() -> dict[str, Any]:

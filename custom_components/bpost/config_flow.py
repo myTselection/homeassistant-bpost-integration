@@ -14,7 +14,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import selector
 
 from .api import BpostAuthenticationError, BpostConnectionError, BpostWebApi
-from .const import CONF_PASSWORD, DOMAIN
+from .const import CONF_PASSWORD, CONF_POSTAL_CODE, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ STEP_USER_EMAIL_SCHEMA = vol.Schema(
         vol.Required(CONF_PASSWORD): selector.TextSelector(
             selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
         ),
+        vol.Optional(CONF_POSTAL_CODE): str,
     }
 )
 
@@ -51,6 +52,7 @@ async def validate_login(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
         session=async_get_clientsession(hass),
         email=email_address,
         password=password,
+        postal_code=data.get(CONF_POSTAL_CODE),
     )
     try:
         await bpost_api.async_login()
@@ -59,10 +61,13 @@ async def validate_login(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     except BpostConnectionError as exc:
         raise CannotConnect(exc) from exc
 
-    return {
+    result = {
         CONF_EMAIL: email_address,
         CONF_PASSWORD: password,
     }
+    if data.get(CONF_POSTAL_CODE):
+        result[CONF_POSTAL_CODE] = data[CONF_POSTAL_CODE]
+    return result
 
 
 class BpostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore
@@ -100,7 +105,7 @@ class BpostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore
         """Create or update entry."""
         existing_entry = await self.async_set_unique_id(info[CONF_EMAIL])
         if existing_entry:
-            self.hass.config_entries.async_update_entry(existing_entry, data=info)
+            self.hass.config_entries.async_update_entry(existing_entry, data={**existing_entry.data, **info})
             await self.hass.config_entries.async_reload(existing_entry.entry_id)
             return self.async_abort(reason="reauth_successful")
         else:

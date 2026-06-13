@@ -2,6 +2,7 @@
 
 DOMAIN = "bpost"
 CONF_PASSWORD = "password"
+CONF_POSTAL_CODE = "postal_code"
 
 ATTR_PARCELS = "parcels"
 SENSOR_PARCELS_DUE = "parcels_due"

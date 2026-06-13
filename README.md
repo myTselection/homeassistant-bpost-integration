@@ -21,6 +21,7 @@ Only features with a checked box are available at the moment. Other features are
 
 * [x] The amount of parcels expected for delivery: `sensor.parcels_due`
 * [x] A sensor per expected parcel, with tracking details in the attributes
+* [x] Public bpost tracking URL, full tracking details, and a compact tracking summary per parcel
 
 #### Binary sensor
 
@@ -41,6 +42,7 @@ This repository is included in the [HACS](https://hacs.xyz) repositories.
 1. Go to your Home Assistant settings > Integrations and add a new integration.
 2. Search for `bpost` and select it.
 3. Enter the email address and password for your bpost account.
+   You can also enter your postal code; bpost's tracking page and tracking API may require it for detailed parcel data.
 4. All entities mentioned above are now available.
 
 ## Dashboard examples
@@ -69,7 +71,16 @@ content: >
   Delivery: {{ parcel.get('expected_delivery') }}
   {% endif %}
 
-  Tracking: `{{ parcel.get('tracking_id', 'Unknown') }}`
+  {% if parcel.get('postal_code') %}
+  Postal code: {{ parcel.get('postal_code') }}
+  {% endif %}
+
+  Tracking: [{{ parcel.get('tracking_id', 'Unknown') }}]({{ parcel.get('tracking_url') }})
+
+  {% set events = parcel.get('tracking_summary', {}).get('events', []) %}
+  {% if events %}
+  Latest update: {{ events[-1].get('event_description') or events[-1].get('status') or events[-1] }}
+  {% endif %}
   {% endfor %}
   {% endif %}
 ```
@@ -102,7 +113,16 @@ card:
     Delivery: {{ parcel.get('expected_delivery') }}
     {% endif %}
 
-    Tracking: `{{ parcel.get('tracking_id', 'Unknown') }}`
+    {% if parcel.get('postal_code') %}
+    Postal code: {{ parcel.get('postal_code') }}
+    {% endif %}
+
+    Tracking: [{{ parcel.get('tracking_id', 'Unknown') }}]({{ parcel.get('tracking_url') }})
+
+    {% set events = parcel.get('tracking_summary', {}).get('events', []) %}
+    {% if events %}
+    Latest update: {{ events[-1].get('event_description') or events[-1].get('status') or events[-1] }}
+    {% endif %}
     {% endfor %}
 ```
 

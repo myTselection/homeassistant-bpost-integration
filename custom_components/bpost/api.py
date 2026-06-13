@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 from aiohttp import ClientError, ClientResponseError, ClientSession
 from yarl import URL
@@ -22,6 +22,8 @@ except ImportError:
 
 LOGIN_URL = "https://www.bpost.be/nl/saml_login?destination=%2Fnl%2Fmijn-bpost"
 MIJN_BPOST_URL = "https://www.bpost.be/nl/mijn-bpost?check_logged_in=1"
+TRACKING_URL = "https://track.bpost.be/btr/web/#/search?lang=nl&itemCode={tracking_id}"
+TRACKING_API_URL = "https://track.bpost.cloud/track/items?itemIdentifier={tracking_id}"
 LOGIN_HOST = "login.bpost.be"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -54,6 +56,10 @@ class Parcel:
     status: str | None = None
     expected_delivery: str | None = None
     sender: str | None = None
+    postal_code: str | None = None
+    tracking_url: str | None = None
+    tracking_details: Mapping[str, Any] | None = None
+    tracking_summary: Mapping[str, Any] | None = None
     raw: Mapping[str, Any] | None = None
 
     @property
@@ -68,6 +74,7 @@ class Parcel:
         """Return Home Assistant state attributes."""
         attributes: dict[str, Any] = {
             "tracking_id": self.tracking_id,
+            "tracking_url": self.tracking_url or _tracking_url(self.tracking_id, self.postal_code),
         }
         if self.status:
             attributes["status"] = self.status
@@ -75,6 +82,12 @@ class Parcel:
             attributes["expected_delivery"] = self.expected_delivery
         if self.sender:
             attributes["sender"] = self.sender
+        if self.postal_code:
+            attributes["postal_code"] = self.postal_code
+        if self.tracking_details:
+            attributes["tracking_details"] = dict(self.tracking_details)
+        if self.tracking_summary:
+            attributes["tracking_summary"] = dict(self.tracking_summary)
         if self.raw:
             attributes["raw"] = dict(self.raw)
         return attributes
@@ -123,10 +136,17 @@ class _FormParser(HTMLParser):
 class BpostWebApi:
     """Small browser-like client for Mijn bpost."""
 
-    def __init__(self, session: ClientSession, email: str, password: str) -> None:
+    def __init__(
+        self,
+        session: ClientSession,
+        email: str,
+        password: str,
+        postal_code: str | None = None,
+    ) -> None:
         self._session = session
         self._email = email
         self._password = password
+        self._postal_code = postal_code
         self._logged_in = False
         self._curl_session = CurlAsyncSession(impersonate="chrome") if CurlAsyncSession is not None else None
 
@@ -171,7 +191,44 @@ class BpostWebApi:
             self._logged_in = False
             raise BpostAuthenticationError("bpost session expired")
 
-        return parse_parcels(html)
+        parcels = parse_parcels(html)
+        return await self._async_enrich_parcels(parcels)
+
+    async def _async_enrich_parcels(self, parcels: list[Parcel]) -> list[Parcel]:
+        """Fetch public tracking details for every parcel where possible."""
+        for parcel in parcels:
+            parcel.postal_code = parcel.postal_code or self._postal_code
+            parcel.tracking_url = _tracking_url(parcel.tracking_id, parcel.postal_code)
+            try:
+                details = await self._async_fetch_tracking_details(parcel.tracking_id, parcel.postal_code)
+            except BpostConnectionError:
+                _LOGGER.debug("Could not fetch bpost tracking details for %s", parcel.tracking_id, exc_info=True)
+                continue
+
+            if details:
+                _merge_tracking_details(parcel, details)
+        return parcels
+
+    async def _async_fetch_tracking_details(
+        self,
+        tracking_id: str,
+        postal_code: str | None = None,
+    ) -> Mapping[str, Any] | None:
+        """Fetch detailed tracking data for a parcel."""
+        url = TRACKING_API_URL.format(tracking_id=quote(tracking_id, safe=""))
+        if postal_code:
+            url += f"&postalCode={quote(postal_code, safe='')}"
+        html, _url = await self._async_get_text(url)
+        try:
+            data = json.loads(html)
+        except json.JSONDecodeError:
+            return None
+
+        if isinstance(data, Mapping) and data.get("error"):
+            return None
+
+        item = _first_tracking_item(data)
+        return item if item is not None else data
 
     async def _async_get_text(self, url: str) -> tuple[str, str]:
         if self._curl_session is not None:
@@ -239,7 +296,7 @@ def parse_parcels(html: str) -> list[Parcel]:
     for tracking_id in _TRACKING_RE.findall(html):
         parcels_by_id.setdefault(
             tracking_id,
-            Parcel(tracking_id=tracking_id, name=tracking_id),
+            Parcel(tracking_id=tracking_id, name=tracking_id, tracking_url=_tracking_url(tracking_id)),
         )
 
     return [parcel for parcel in parcels_by_id.values() if not parcel.delivered]
@@ -365,7 +422,33 @@ def _parcel_from_mapping(item: Mapping[str, Any]) -> Parcel | None:
         ),
     )
     sender = _first_text(item, ("sender", "senderName", "retailerName", "shopName", "shipper"))
+    postal_code = _first_nested_text(
+        item,
+        (
+            "postalCode",
+            "postal_code",
+            "postcode",
+            "receiverPostcode",
+            "receiverPostalCode",
+            "zipCode",
+            "zip",
+        ),
+    )
     name = sender or _first_text(item, ("title", "name", "description", "productName")) or tracking_id
+    tracking_url = _first_url(
+        item,
+        (
+            "trackingUrl",
+            "trackingURL",
+            "tracking_url",
+            "trackAndTraceUrl",
+            "trackAndTraceURL",
+            "url",
+            "link",
+        ),
+    )
+    postal_code = postal_code or _postal_code_from_url(tracking_url)
+    tracking_url = _tracking_url(tracking_id, postal_code) if not tracking_url else _ensure_postal_code(tracking_url, postal_code)
 
     return Parcel(
         tracking_id=tracking_id,
@@ -373,6 +456,8 @@ def _parcel_from_mapping(item: Mapping[str, Any]) -> Parcel | None:
         status=status,
         expected_delivery=expected_delivery,
         sender=sender,
+        postal_code=postal_code,
+        tracking_url=tracking_url,
         raw=item,
     )
 
@@ -393,3 +478,174 @@ def _first_text(item: Mapping[str, Any], keys: tuple[str, ...]) -> str | None:
             if nested:
                 return nested
     return None
+
+
+def _first_nested_text(item: Mapping[str, Any], keys: tuple[str, ...]) -> str | None:
+    text = _first_text(item, keys)
+    if text:
+        return text
+
+    normalized_keys = {key.lower() for key in keys}
+    for key, value in item.items():
+        if key.lower() in normalized_keys and isinstance(value, (str, int, float)):
+            return str(value).strip()
+        if isinstance(value, Mapping):
+            nested = _first_nested_text(value, keys)
+            if nested:
+                return nested
+        elif isinstance(value, list):
+            for child in value:
+                if isinstance(child, Mapping):
+                    nested = _first_nested_text(child, keys)
+                    if nested:
+                        return nested
+    return None
+
+
+def _first_url(item: Mapping[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            return value
+        if isinstance(value, Mapping):
+            nested = _first_url(value, ("href", "url", "link"))
+            if nested:
+                return nested
+    return None
+
+
+def _tracking_url(tracking_id: str, postal_code: str | None = None) -> str:
+    url = TRACKING_URL.format(tracking_id=quote(tracking_id, safe=""))
+    if postal_code:
+        url += f"&postalCode={quote(postal_code, safe='')}"
+    return url
+
+
+def _ensure_postal_code(url: str, postal_code: str | None) -> str:
+    if not postal_code or "postalCode=" in url:
+        return url
+    separator = "&" if "?" in url.rsplit("#", maxsplit=1)[-1] else "?"
+    return f"{url}{separator}postalCode={quote(postal_code, safe='')}"
+
+
+def _postal_code_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+
+    parsed = urlparse(url)
+    query_parts = [parsed.query]
+    if "?" in parsed.fragment:
+        query_parts.append(parsed.fragment.split("?", maxsplit=1)[1])
+
+    for query in query_parts:
+        values = parse_qs(query).get("postalCode")
+        if values and values[0]:
+            return values[0]
+    return None
+
+
+def _first_tracking_item(data: Any) -> Mapping[str, Any] | None:
+    if isinstance(data, Mapping):
+        for key in ("items", "item", "shipments", "shipment", "data"):
+            value = data.get(key)
+            if isinstance(value, list) and value and isinstance(value[0], Mapping):
+                return value[0]
+            if isinstance(value, Mapping):
+                return value
+        return data
+    if isinstance(data, list) and data and isinstance(data[0], Mapping):
+        return data[0]
+    return None
+
+
+def _merge_tracking_details(parcel: Parcel, details: Mapping[str, Any]) -> None:
+    parcel.tracking_details = details
+    parcel.tracking_summary = _summarize_tracking_details(details)
+    parcel.status = _first_text(
+        details,
+        ("status", "statusText", "statusDescription", "phase", "state", "eventDescription"),
+    ) or _latest_event_text(details) or parcel.status
+    parcel.expected_delivery = _first_text(
+        details,
+        (
+            "expectedDeliveryDate",
+            "expected_delivery_date",
+            "deliveryDate",
+            "delivery_date",
+            "plannedDeliveryDate",
+            "planned_delivery_date",
+        ),
+    ) or parcel.expected_delivery
+    parcel.sender = _first_text(details, ("sender", "senderName", "retailerName", "shopName", "shipper")) or parcel.sender
+    parcel.postal_code = _first_nested_text(
+        details,
+        (
+            "postalCode",
+            "postal_code",
+            "postcode",
+            "receiverPostcode",
+            "receiverPostalCode",
+            "zipCode",
+            "zip",
+        ),
+    ) or parcel.postal_code
+    parcel.tracking_url = _tracking_url(parcel.tracking_id, parcel.postal_code)
+
+
+def _summarize_tracking_details(details: Mapping[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for source, target in (
+        ("itemCode", "item_code"),
+        ("itemIdentifier", "item_identifier"),
+        ("shipmentType", "shipment_type"),
+        ("productCategory", "product_category"),
+        ("deliveryPreferenceType", "delivery_preference_type"),
+    ):
+        value = details.get(source)
+        if value is not None:
+            summary[target] = value
+
+    events = details.get("events")
+    if isinstance(events, list):
+        summary["events"] = [_summarize_event(event) for event in events if isinstance(event, Mapping)]
+    delivery_point = details.get("deliveryPoint")
+    if isinstance(delivery_point, Mapping):
+        summary["delivery_point"] = _compact_mapping(delivery_point)
+    delivery_info = details.get("actualDeliveryInformation")
+    if isinstance(delivery_info, Mapping):
+        summary["actual_delivery_information"] = _compact_mapping(delivery_info)
+    return summary
+
+
+def _summarize_event(event: Mapping[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key in ("date", "time", "timestamp", "status", "eventCode", "eventDescription", "location"):
+        value = event.get(key)
+        if value is not None:
+            summary[_camel_to_snake(key)] = value
+    return summary or _compact_mapping(event)
+
+
+def _latest_event_text(details: Mapping[str, Any]) -> str | None:
+    events = details.get("events")
+    if not isinstance(events, list):
+        return None
+    for event in reversed(events):
+        if isinstance(event, Mapping):
+            text = _first_text(event, ("eventDescription", "status", "description", "label"))
+            if text:
+                return text
+    return None
+
+
+def _compact_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key, child in value.items():
+        if child is None or isinstance(child, (list, dict)):
+            continue
+        compact[_camel_to_snake(str(key))] = child
+    return compact
+
+
+def _camel_to_snake(value: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
