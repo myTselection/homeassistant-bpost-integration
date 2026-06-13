@@ -32,7 +32,6 @@ USER_AGENT = (
 )
 
 _LOGGER = logging.getLogger(__name__)
-_TRACKING_RE = re.compile(r"\b[A-Z]{2}\d{9}[A-Z]{2}\b|\b\d{10,30}\b")
 
 
 class BpostApiError(Exception):
@@ -61,6 +60,7 @@ class Parcel:
     tracking_details: Mapping[str, Any] | None = None
     tracking_summary: Mapping[str, Any] | None = None
     raw: Mapping[str, Any] | None = None
+    source: str = "account"
 
     @property
     def delivered(self) -> bool:
@@ -100,6 +100,7 @@ class _FormParser(HTMLParser):
         super().__init__()
         self.forms: list[dict[str, Any]] = []
         self.scripts: list[str] = []
+        self.links: list[str] = []
         self._current_form: dict[str, Any] | None = None
         self._in_script = False
         self._script_chunks: list[str] = []
@@ -119,6 +120,10 @@ class _FormParser(HTMLParser):
         elif tag == "script":
             self._in_script = True
             self._script_chunks = []
+        elif tag == "a":
+            href = attrs_dict.get("href")
+            if href:
+                self.links.append(href)
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "form" and self._current_form is not None:
@@ -191,11 +196,15 @@ class BpostWebApi:
             self._logged_in = False
             raise BpostAuthenticationError("bpost session expired")
 
+        profile_postal_code = parse_profile_postal_code(html)
         parcels = parse_parcels(html)
+        for parcel in parcels:
+            parcel.postal_code = parcel.postal_code or profile_postal_code
         return await self._async_enrich_parcels(parcels)
 
     async def _async_enrich_parcels(self, parcels: list[Parcel]) -> list[Parcel]:
         """Fetch public tracking details for every parcel where possible."""
+        enriched: list[Parcel] = []
         for parcel in parcels:
             parcel.postal_code = parcel.postal_code or self._postal_code
             parcel.tracking_url = _tracking_url(parcel.tracking_id, parcel.postal_code)
@@ -207,7 +216,14 @@ class BpostWebApi:
 
             if details:
                 _merge_tracking_details(parcel, details)
-        return parcels
+            elif parcel.source == "tracking_link":
+                _LOGGER.debug(
+                    "Ignoring bpost tracking-link candidate %s because tracking returned no details",
+                    parcel.tracking_id,
+                )
+                continue
+            enriched.append(parcel)
+        return enriched
 
     async def _async_fetch_tracking_details(
         self,
@@ -293,13 +309,52 @@ def parse_parcels(html: str) -> list[Parcel]:
                 if parcel is not None:
                     parcels_by_id[parcel.tracking_id] = parcel
 
-    for tracking_id in _TRACKING_RE.findall(html):
+    for tracking_id, postal_code in _tracking_links_from_html(parser):
         parcels_by_id.setdefault(
             tracking_id,
-            Parcel(tracking_id=tracking_id, name=tracking_id, tracking_url=_tracking_url(tracking_id)),
+            Parcel(
+                tracking_id=tracking_id,
+                name=tracking_id,
+                postal_code=postal_code,
+                tracking_url=_tracking_url(tracking_id, postal_code),
+                source="tracking_link",
+            ),
         )
 
+    _LOGGER.debug(
+        "Parsed %s bpost parcel candidate(s) from Mijn bpost (%s tracking link(s), %s script(s))",
+        len(parcels_by_id),
+        len(parser.links),
+        len(parser.scripts),
+    )
     return [parcel for parcel in parcels_by_id.values() if not parcel.delivered]
+
+
+def parse_profile_postal_code(html: str) -> str | None:
+    """Parse the account/profile postal code from a Mijn bpost HTML response."""
+    parser = _parse_html(html)
+    candidates: list[str] = []
+
+    for script in parser.scripts:
+        for payload in _json_payloads(script):
+            for item in _walk_dicts(payload):
+                if _looks_like_profile_address(item):
+                    postal_code = _first_nested_text(
+                        item,
+                        (
+                            "postalCode",
+                            "postal_code",
+                            "postcode",
+                            "zipCode",
+                            "zip",
+                        ),
+                    )
+                    if postal_code and _looks_like_postal_code(postal_code):
+                        candidates.append(postal_code)
+
+    if candidates:
+        return candidates[0]
+    return None
 
 
 def _parse_html(html: str) -> _FormParser:
@@ -542,6 +597,81 @@ def _postal_code_from_url(url: str | None) -> str | None:
         if values and values[0]:
             return values[0]
     return None
+
+
+def _tracking_links_from_html(parser: _FormParser) -> list[tuple[str, str | None]]:
+    tracking_links: list[tuple[str, str | None]] = []
+    for href in parser.links:
+        if "itemCode" not in href and "itemCodes" not in href:
+            continue
+
+        parsed = urlparse(href)
+        host = parsed.hostname or ""
+        if host and not host.endswith(("bpost.be", "bpost.cloud")):
+            continue
+
+        query_parts = [parsed.query]
+        if "?" in parsed.fragment:
+            query_parts.append(parsed.fragment.split("?", maxsplit=1)[1])
+
+        postal_code = None
+        tracking_ids: list[str] = []
+        for query in query_parts:
+            params = parse_qs(query)
+            postal_code = postal_code or _first_query_value(params, "postalCode")
+            tracking_ids.extend(_tracking_ids_from_query_values(params.get("itemCode", [])))
+            tracking_ids.extend(_tracking_ids_from_query_values(params.get("itemCodes", [])))
+
+        for tracking_id in tracking_ids:
+            tracking_links.append((tracking_id, postal_code))
+    return tracking_links
+
+
+def _first_query_value(params: Mapping[str, list[str]], key: str) -> str | None:
+    values = params.get(key)
+    if values and values[0]:
+        return values[0]
+    return None
+
+
+def _tracking_ids_from_query_values(values: list[str]) -> list[str]:
+    tracking_ids: list[str] = []
+    for value in values:
+        for tracking_id in re.split(r"[,;\s]+", value):
+            tracking_id = tracking_id.strip()
+            if _looks_like_tracking_id(tracking_id):
+                tracking_ids.append(tracking_id)
+    return tracking_ids
+
+
+def _looks_like_tracking_id(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z]{2}\d{9}[A-Z]{2}|\d{10,30}", value))
+
+
+def _looks_like_profile_address(item: Mapping[str, Any]) -> bool:
+    keys = {key.lower() for key in item}
+    has_postal_code = bool({"postalcode", "postal_code", "postcode", "zipcode", "zip"} & keys)
+    if not has_postal_code:
+        return False
+
+    address_keys = {
+        "address",
+        "addresses",
+        "city",
+        "country",
+        "countrycode",
+        "municipality",
+        "profile",
+        "receiver",
+        "street",
+        "streetname",
+        "streetnumber",
+    }
+    return bool(address_keys & keys)
+
+
+def _looks_like_postal_code(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 -]{2,10}", value.strip()))
 
 
 def _first_tracking_item(data: Any) -> Mapping[str, Any] | None:

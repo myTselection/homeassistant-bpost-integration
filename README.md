@@ -42,7 +42,7 @@ This repository is included in the [HACS](https://hacs.xyz) repositories.
 1. Go to your Home Assistant settings > Integrations and add a new integration.
 2. Search for `bpost` and select it.
 3. Enter the email address and password for your bpost account.
-   You can also enter your postal code; bpost's tracking page and tracking API may require it for detailed parcel data.
+   The integration tries to use the postal code from your bpost profile; the optional postal code field is only a fallback.
 4. All entities mentioned above are now available.
 
 ## Dashboard examples
