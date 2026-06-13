@@ -4,11 +4,11 @@
   "config_flow": true,
   "documentation": "https://github.com/sdebruyn/homeassistant-bpost-integration",
   "issue_tracker": "https://github.com/sdebruyn/homeassistant-bpost-integration/issues",
-  "requirements": [],
+  "requirements": ["curl-cffi>=0.11.0"],
   "dependencies": [],
   "codeowners": [
     "@sdebruyn"
   ],
-  "version": "0.2.0",
+  "version": "0.3.0",
   "iot_class": "cloud_polling"
 }

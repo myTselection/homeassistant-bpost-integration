@@ -43,6 +43,85 @@ This repository is included in the [HACS](https://hacs.xyz) repositories.
 3. Enter the email address and password for your bpost account.
 4. All entities mentioned above are now available.
 
+## Dashboard examples
+
+### Markdown card
+
+```yaml
+type: markdown
+title: bpost parcels
+content: >
+  {% set parcels = state_attr('sensor.parcels_due', 'parcels') or [] %}
+
+  {% if parcels | count == 0 %}
+  No parcels expected.
+  {% else %}
+  **{{ states('sensor.parcels_due') }} parcel{{ 's' if parcels | count != 1 else '' }} expected**
+
+  {% for parcel in parcels %}
+  ---
+
+  **{{ parcel.get('sender') or parcel.get('tracking_id', 'Parcel') }}**
+
+  Status: {{ parcel.get('status', 'Expected') }}
+
+  {% if parcel.get('expected_delivery') %}
+  Delivery: {{ parcel.get('expected_delivery') }}
+  {% endif %}
+
+  Tracking: `{{ parcel.get('tracking_id', 'Unknown') }}`
+  {% endfor %}
+  {% endif %}
+```
+
+### Conditional card
+
+Only show parcel details when at least one parcel is expected:
+
+```yaml
+type: conditional
+conditions:
+  - entity: binary_sensor.expecting_parcel
+    state: "on"
+card:
+  type: markdown
+  title: bpost parcels
+  content: >
+    {% set parcels = state_attr('sensor.parcels_due', 'parcels') or [] %}
+
+    **{{ parcels | count }} parcel{{ 's' if parcels | count != 1 else '' }} expected**
+
+    {% for parcel in parcels %}
+    ---
+
+    **{{ parcel.get('sender') or parcel.get('tracking_id', 'Parcel') }}**
+
+    Status: {{ parcel.get('status', 'Expected') }}
+
+    {% if parcel.get('expected_delivery') %}
+    Delivery: {{ parcel.get('expected_delivery') }}
+    {% endif %}
+
+    Tracking: `{{ parcel.get('tracking_id', 'Unknown') }}`
+    {% endfor %}
+```
+
+### Auto-entities card
+
+If you use the `auto-entities` custom card, you can automatically list the dynamic parcel sensors:
+
+```yaml
+type: custom:auto-entities
+card:
+  type: entities
+  title: bpost parcels
+filter:
+  include:
+    - entity_id: sensor.parcel_*
+sort:
+  method: name
+```
+
 If bpost changes the Mijn bpost page payload, the integration may need an
 extractor update. Enable debug logging for `custom_components.bpost` when
 reporting parcel parsing issues.

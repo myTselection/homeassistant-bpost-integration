@@ -11,6 +11,14 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from aiohttp import ClientError, ClientResponseError, ClientSession
+from yarl import URL
+
+try:
+    from curl_cffi.requests import AsyncSession as CurlAsyncSession
+    from curl_cffi.requests import RequestsError as CurlRequestsError
+except ImportError:
+    CurlAsyncSession = None  # type: ignore[assignment]
+    CurlRequestsError = None  # type: ignore[assignment]
 
 LOGIN_URL = "https://www.bpost.be/nl/saml_login?destination=%2Fnl%2Fmijn-bpost"
 MIJN_BPOST_URL = "https://www.bpost.be/nl/mijn-bpost?check_logged_in=1"
@@ -120,6 +128,7 @@ class BpostWebApi:
         self._email = email
         self._password = password
         self._logged_in = False
+        self._curl_session = CurlAsyncSession(impersonate="chrome") if CurlAsyncSession is not None else None
 
     async def async_login(self) -> None:
         """Log in through bpost's PingFederate SAML flow."""
@@ -147,6 +156,11 @@ class BpostWebApi:
 
         self._logged_in = True
 
+    async def async_close(self) -> None:
+        """Close the browser-like session."""
+        if self._curl_session is not None:
+            await self._curl_session.close()
+
     async def async_fetch_parcels(self) -> list[Parcel]:
         """Fetch parcels from Mijn bpost."""
         if not self._logged_in:
@@ -160,17 +174,23 @@ class BpostWebApi:
         return parse_parcels(html)
 
     async def _async_get_text(self, url: str) -> tuple[str, str]:
+        if self._curl_session is not None:
+            return await self._async_curl_get_text(url)
+
         try:
-            response = await self._session.get(url, headers=_headers(url))
+            response = await self._session.get(URL(url, encoded=True), headers=_headers(url))
             response.raise_for_status()
             return await response.text(), str(response.url)
         except (ClientError, ClientResponseError) as exc:
             raise BpostConnectionError(exc) from exc
 
     async def _async_post_text(self, url: str, data: Mapping[str, str], referer: str) -> tuple[str, str]:
+        if self._curl_session is not None:
+            return await self._async_curl_post_text(url, data, referer)
+
         try:
             response = await self._session.post(
-                url,
+                URL(url, encoded=True),
                 data=data,
                 headers=_headers(url, referer=referer, form=True),
                 allow_redirects=True,
@@ -179,6 +199,29 @@ class BpostWebApi:
             return await response.text(), str(response.url)
         except (ClientError, ClientResponseError) as exc:
             raise BpostConnectionError(exc) from exc
+
+    async def _async_curl_get_text(self, url: str) -> tuple[str, str]:
+        try:
+            response = await self._curl_session.get(url, headers=_headers(url), allow_redirects=True)
+        except CurlRequestsError as exc:
+            raise BpostConnectionError(exc) from exc
+
+        _raise_for_curl_status(response)
+        return response.text, str(response.url)
+
+    async def _async_curl_post_text(self, url: str, data: Mapping[str, str], referer: str) -> tuple[str, str]:
+        try:
+            response = await self._curl_session.post(
+                url,
+                data=dict(data),
+                headers=_headers(url, referer=referer, form=True),
+                allow_redirects=True,
+            )
+        except CurlRequestsError as exc:
+            raise BpostConnectionError(exc) from exc
+
+        _raise_for_curl_status(response)
+        return response.text, str(response.url)
 
 
 def parse_parcels(html: str) -> list[Parcel]:
@@ -242,6 +285,13 @@ def _headers(url: str, referer: str | None = None, form: bool = False) -> dict[s
         origin_url = urlparse(referer) if referer is not None else parsed
         headers["Origin"] = f"{origin_url.scheme}://{origin_url.hostname}"
     return headers
+
+
+def _raise_for_curl_status(response: Any) -> None:
+    if response.status_code >= 400:
+        raise BpostConnectionError(
+            f"{response.status_code}, message='{response.reason}', url='{response.url}'"
+        )
 
 
 def _json_payloads(script: str) -> list[Any]:
