@@ -2,55 +2,67 @@ from datetime import timedelta
 from logging import Logger
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_EMAIL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from my_bpost_api import AuthenticationException, BpostApi, BpostApiException
 
+from .api import BpostAuthenticationError, BpostConnectionError, BpostWebApi
+from .const import (
+    ATTR_PARCELS,
+    BINARY_SENSOR_EXPECTING_PARCEL,
+    CONF_PASSWORD,
+    SENSOR_PARCELS_DUE,
+)
 
-async def async_update_sensors(bpost_api: BpostApi):
-    mail = await bpost_api.async_fetch_mail()
+async def async_update_sensors(bpost_api: BpostWebApi):
+    """Fetch parcel data and shape it for Home Assistant entities."""
+    parcels = await bpost_api.async_fetch_parcels()
+    parcel_attributes = [parcel.attributes for parcel in parcels]
 
-    sensor_data = {"mail_today": {"data": len(mail["Active"]), "extra": {"mail_ids": []}}}
+    sensor_data: dict[str, dict[str, Any]] = {
+        SENSOR_PARCELS_DUE: {
+            "data": len(parcels),
+            "extra": {ATTR_PARCELS: parcel_attributes},
+        }
+    }
+    for parcel in parcels:
+        sensor_data[f"parcel_{_slugify(parcel.tracking_id)}"] = {
+            "data": parcel.status or "expected",
+            "name": parcel.name,
+            "extra": parcel.attributes,
+        }
 
     binary_sensor_data = {
-        "mail_processed_today": {"data": not mail["isHoliday"] and not mail["isMailProcessed"]},
-        "mail_service_available": {"data": mail["isMMTSubscribed"]},
+        BINARY_SENSOR_EXPECTING_PARCEL: {
+            "data": bool(parcels),
+            "extra": {ATTR_PARCELS: parcel_attributes},
+        },
     }
-
-    camera_data = {}
-    for active_mail in mail["Active"]:
-        camera_data[active_mail["tagId"]] = {
-            "data": active_mail["mailURL"],
-            "extra": {"expected_delivery_date": active_mail["expectedDeliveryDate"]},
-        }
-        sensor_data["mail_today"]["extra"]["mail_ids"].append(active_mail["tagId"])  # type: ignore
-
     return {
         "sensor": sensor_data,
         "binary_sensor": binary_sensor_data,
-        "camera": camera_data,
     }
 
 
 class BpostEntryData:
-    def __init__(self, hass: HomeAssistant, data: dict[str, Any], logger: Logger) -> None:
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, logger: Logger) -> None:
         super().__init__()
-        self.api = BpostApi(
-            email=data["email"],
-            token=data["token"],
-            refresh_token=data["refresh_token"],
-            session_callback=lambda: async_get_clientsession(hass, True),
+        self.api = BpostWebApi(
+            session=async_get_clientsession(hass),
+            email=entry.data[CONF_EMAIL],
+            password=entry.data[CONF_PASSWORD],
         )
 
         async def async_update_data() -> dict[str, Any]:
             try:
                 return await async_update_sensors(self.api)
-            except AuthenticationException as ex:
+            except BpostAuthenticationError as ex:
                 raise ConfigEntryAuthFailed(ex)
-            except BpostApiException as ex:
-                raise UpdateFailed(f"Error communicating with API: {ex}")
+            except BpostConnectionError as ex:
+                raise UpdateFailed(f"Error communicating with bpost: {ex}") from ex
 
         self.coordinator = DataUpdateCoordinator(
             hass,
@@ -59,3 +71,7 @@ class BpostEntryData:
             update_method=async_update_data,
             update_interval=timedelta(hours=1),
         )
+
+
+def _slugify(value: str) -> str:
+    return "".join(character.lower() if character.isalnum() else "_" for character in value).strip("_")

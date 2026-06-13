@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Mapping
+from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
@@ -9,7 +9,8 @@ from homeassistant.helpers import entity_registry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
-from . import DOMAIN, BpostEntryData
+from .bpost_entry_data import BpostEntryData
+from .const import DOMAIN
 
 
 async def async_setup_entry(hass, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
@@ -24,9 +25,9 @@ async def async_setup_entry(hass, entry: ConfigEntry, async_add_entities: AddEnt
     def add_new_entities() -> None:
         entities = entity_registry.async_entries_for_config_entry(entity_registry.async_get(hass), entry.entry_id)
         current_ids = [
-            entity.entity_id.split(".")[1]
+            entity.unique_id.removeprefix(f"{DOMAIN}_binary_sensor_")
             for entity in entities
-            if entity.platform == DOMAIN and entity.domain == "binary_sensor"
+            if entity.platform == DOMAIN and entity.domain == "binary_sensor" and entity.unique_id
         ]
         data_ids = entry_data.coordinator.data["binary_sensor"].keys()
         to_add = [entity_id for entity_id in data_ids if entity_id not in current_ids]
@@ -37,6 +38,8 @@ async def async_setup_entry(hass, entry: ConfigEntry, async_add_entities: AddEnt
 
 
 class BpostBinarySensor(CoordinatorEntity, BinarySensorEntity):
+    _attr_has_entity_name = True
+
     def __init__(self, coordinator: DataUpdateCoordinator, sensor_id: str):
         """Pass coordinator to CoordinatorEntity."""
         super().__init__(coordinator)
@@ -44,11 +47,11 @@ class BpostBinarySensor(CoordinatorEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool | None:
-        return self.coordinator.data[self.platform.domain][self.sensor_id]["data"]
+        return self.coordinator.data["binary_sensor"][self.sensor_id]["data"]
 
     @property
     def unique_id(self) -> str | None:
-        return f"{DOMAIN}_{self.platform.domain}_{self.sensor_id}"
+        return f"{DOMAIN}_binary_sensor_{self.sensor_id}"
 
     @property
     def name(self) -> str | None:
@@ -56,4 +59,4 @@ class BpostBinarySensor(CoordinatorEntity, BinarySensorEntity):
 
     @property
     def extra_state_attributes(self) -> Mapping[str, Any] | None:
-        return self.coordinator.data[self.platform.domain][self.sensor_id].get("extra")
+        return self.coordinator.data["binary_sensor"][self.sensor_id].get("extra")

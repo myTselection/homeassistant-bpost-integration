@@ -3,37 +3,28 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/sdebruyn/homeassistant-bpost-integration/main.svg)](https://results.pre-commit.ci/latest/github/sdebruyn/homeassistant-bpost-integration/main)
 ![GitHub Workflow Status (branch)](https://img.shields.io/github/workflow/status/sdebruyn/homeassistant-bpost-integration/Validate/main)
-![GitHub](https://img.shields.io/github/license/sdebruyn/my-bpost-api)
 ![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)
 
 This is a custom component for [Home Assistant](https://home-assistant.io/)
-that allows you to see the mail you are going to receive.
+that allows you to see parcels listed in your bpost Mijn bpost account.
 
-This integration requires you to create and configure an account in the [my bpost app](https://www.bpost.be/en/my-bpost-app).
-You need to have _My Mail_ correctly setup within the app to use this integration.
+This integration signs in through the same bpost account flow used by
+[Mijn bpost](https://www.bpost.be/nl/mijn-bpost).
 
 ## Features
 
-Only features with a ☑️ are available at the moment. Other features are planned for the future.
+Only features with a checked box are available at the moment. Other features are planned for the future.
 
 ### Entities
 
 #### Sensor
 
-* [x] The amount of mail you will receive today: `sensor.mail_today` (extra attribute containing unique IDs of the mail)
-* [ ] Information about parcels you're tracking
+* [x] The amount of parcels expected for delivery: `sensor.parcels_due`
+* [x] A sensor per expected parcel, with tracking details in the attributes
 
 #### Binary sensor
 
-* [x] If mail has been processed today: `binary_sensor.mail_processed_today`
-* [x] If you've configured the mail service correctly: `binary_sensor.mail_service_available`
-* [ ] If you're expecting a parcel
-
-#### Camera
-
-* [x] Pictures of the mail you will receive. The image will be available with a unique ID in the form `bpost_camera_id`.
-    The list of IDs can be found in the `mail_today` extra attribute.
-    This entity has an extra attribute `expected_delivery_date` with a timestamp indicating when the mail should arrive.
+* [x] If you're expecting a parcel: `binary_sensor.expecting_parcel`
 
 ### Services
 
@@ -49,10 +40,12 @@ This repository is included in the [HACS](https://hacs.xyz) repositories.
 
 1. Go to your Home Assistant settings > Integrations and add a new integration.
 2. Search for `bpost` and select it.
-3. Enter the email address you've used in the mobile app.
-4. You will receive a verification code through email.
-5. Enter the verification code you received.
-6. All entities and services mentioned above are now available.
+3. Enter the email address and password for your bpost account.
+4. All entities mentioned above are now available.
+
+If bpost changes the Mijn bpost page payload, the integration may need an
+extractor update. Enable debug logging for `custom_components.bpost` when
+reporting parcel parsing issues.
 
 ## License
 

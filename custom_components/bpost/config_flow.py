@@ -6,75 +6,63 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.const import CONF_CODE, CONF_EMAIL
+from homeassistant.const import CONF_EMAIL
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from my_bpost_api import AuthenticationException, BpostApi, BpostApiException
+from homeassistant.helpers import selector
 
-from .const import DOMAIN
+from .api import BpostAuthenticationError, BpostConnectionError, BpostWebApi
+from .const import CONF_PASSWORD, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_EMAIL_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_EMAIL): str,
+        vol.Required(CONF_PASSWORD): selector.TextSelector(
+            selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+        ),
     }
 )
 
-STEP_USER_VERIFICATION_SCHEMA = vol.Schema(
+STEP_REAUTH_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_CODE): str,
+        vol.Required(CONF_PASSWORD): selector.TextSelector(
+            selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+        ),
     }
 )
 
 
-async def validate_email(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate that the account exists and send a verification code if so."""
+async def validate_login(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+    """Validate bpost credentials against the web login."""
     email_address = data.get(CONF_EMAIL)
     if email_address is None:
         raise ValueError("No email address provided")
+    password = data.get(CONF_PASSWORD)
+    if password is None:
+        raise ValueError("No password provided")
 
     email_address = email_address.lower()
 
-    async with BpostApi(
+    bpost_api = BpostWebApi(
+        session=async_get_clientsession(hass),
         email=email_address,
-        session_callback=lambda: async_get_clientsession(hass, True),
-    ) as bpost_api:
-        try:
-            await bpost_api.async_users_email_login()
-        except AuthenticationException as exc:
-            raise InvalidAuth(exc)
-        except BpostApiException as exc:
-            raise CannotConnect(exc)
-        else:
-            return {
-                CONF_EMAIL: bpost_api.email,
-            }
+        password=password,
+    )
+    try:
+        await bpost_api.async_login()
+    except BpostAuthenticationError as exc:
+        raise InvalidAuth(exc) from exc
+    except BpostConnectionError as exc:
+        raise CannotConnect(exc) from exc
 
-
-async def validate_code(hass: HomeAssistant, email_address: str, data: dict[str, Any]) -> dict[str, Any]:
-    code = data.get(CONF_CODE)
-    if code is None:
-        raise ValueError("No verification code provided")
-
-    async with BpostApi(
-        email=email_address,
-        session_callback=lambda: async_get_clientsession(hass, True),
-    ) as bpost_api:
-        try:
-            await bpost_api.async_users_email_login_verify_code(code)
-        except AuthenticationException as exc:
-            raise InvalidAuth(exc)
-        except BpostApiException as exc:
-            raise CannotConnect(exc)
-        else:
-            return {
-                "email": bpost_api.email,
-                "token": bpost_api.token,
-                "refresh_token": bpost_api.refresh_token,
-            }
+    return {
+        CONF_EMAIL: email_address,
+        CONF_PASSWORD: password,
+    }
 
 
 class BpostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore
@@ -91,53 +79,22 @@ class BpostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore
         errors = {}
 
         try:
-            info = await validate_email(self.hass, user_input)
+            info = await validate_login(self.hass, user_input)
         except CannotConnect:
             errors["base"] = "cannot_connect"
         except InvalidAuth:
             errors["base"] = "invalid_auth"
         except ValueError:
-            errors[CONF_EMAIL] = "invalid_email"
+            errors["base"] = "invalid_login"
         except Exception:  # pylint: disable=broad-except
             _LOGGER.exception("Unexpected exception")
             errors["base"] = "unknown"
         else:
             await self.async_set_unique_id(info[CONF_EMAIL])
             self._abort_if_unique_id_configured()
-            return await self.async_step_verify_code()
+            return self.async_create_entry(title=info[CONF_EMAIL], data=info)
 
         return self.async_show_form(step_id="user", data_schema=STEP_USER_EMAIL_SCHEMA, errors=errors)
-
-    async def async_step_verify_code(self, user_input: dict | None = None) -> FlowResult:
-        """Handle the verification code step."""
-
-        if user_input is None:
-            return self.async_show_form(
-                step_id="verify_code",
-                data_schema=STEP_USER_VERIFICATION_SCHEMA,
-            )
-
-        errors = {}
-
-        try:
-            info = await validate_code(self.hass, self.unique_id, user_input)
-        except CannotConnect:
-            errors["base"] = "cannot_connect"
-        except InvalidAuth:
-            errors["base"] = "invalid_auth"
-        except ValueError:
-            errors[CONF_CODE] = "invalid_code"
-        except Exception:  # pylint: disable=broad-except
-            _LOGGER.exception("Unexpected exception")
-            errors["base"] = "unknown"
-        else:
-            return await self.async_create_or_update_entry(info)
-
-        return self.async_show_form(
-            step_id="verify_code",
-            data_schema=STEP_USER_VERIFICATION_SCHEMA,
-            errors=errors,
-        )
 
     async def async_create_or_update_entry(self, info: dict[str, Any]) -> FlowResult:
         """Create or update entry."""
@@ -158,11 +115,30 @@ class BpostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore
         if user_input is None:
             return self.async_show_form(
                 step_id="reauth_confirm",
-                data_schema=vol.Schema({}),
+                data_schema=STEP_REAUTH_SCHEMA,
             )
 
-        await validate_email(self.hass, {CONF_EMAIL: self.unique_id})
-        return await self.async_step_verify_code(user_input)
+        errors = {}
+        try:
+            info = await validate_login(
+                self.hass,
+                {CONF_EMAIL: self.unique_id, CONF_PASSWORD: user_input[CONF_PASSWORD]},
+            )
+        except CannotConnect:
+            errors["base"] = "cannot_connect"
+        except InvalidAuth:
+            errors["base"] = "invalid_auth"
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception("Unexpected exception")
+            errors["base"] = "unknown"
+        else:
+            return await self.async_create_or_update_entry(info)
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=STEP_REAUTH_SCHEMA,
+            errors=errors,
+        )
 
 
 class CannotConnect(HomeAssistantError):

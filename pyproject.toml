@@ -1,14 +1,13 @@
 [tool.poetry]
 name = "homeassistant-bpost-integration"
-version = "0.1.0"
+version = "0.2.0"
 description = "Integration of the my bpost app for Home Assistant"
 authors = ["Sam Debruyn <sam@debruyn.dev>"]
 license = "MIT"
 
 [tool.poetry.dependencies]
-python = "^3.8"
-homeassistant = "^2021.12.3"
-my-bpost-api = ">=0.2.0"
+python = ">=3.12,<3.13"
+homeassistant = ">=2024.6.0,<2025.2.0"
 
 [tool.poetry.dev-dependencies]
 pre-commit = "^2.16.0"

@@ -2,5 +2,5 @@
   "name": "my bpost",
   "render_readme": true,
   "country": "BE",
-  "domains": ["sensor", "binary_sensor", "camera"]
+  "domains": ["sensor", "binary_sensor"]
 }

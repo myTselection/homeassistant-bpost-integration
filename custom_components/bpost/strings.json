@@ -1,32 +1,28 @@
 {
-  "title": "bpost My Mail",
+  "title": "bpost Mijn bpost",
   "config": {
     "step": {
       "user": {
         "title": "Configure your bpost account",
-        "description": "Fill in the email address used to configure your bpost app. The mobile app needs to be configured for My Mail and parcel tracking for this to work.",
+        "description": "Fill in the credentials for your bpost account. The integration signs in through the same bpost account page used by Mijn bpost.",
         "data": {
-          "email": "Email address"
-        }
-      },
-      "verify_code": {
-        "title": "Verification",
-        "description": "bpost has sent you an email with a verification code. Please fill in the code below.",
-        "data": {
-          "code": "Verification code"
+          "email": "Email address",
+          "password": "Password"
         }
       },
       "reauth_confirm": {
         "title": "Re-authentication",
-        "description": "Your authentication has expired. Continue to re-authenticate. You will receive a verification code through email."
+        "description": "Your bpost session has expired. Enter your bpost password to sign in again.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
-      "cannot_connect": "The connection to the bpost API failed. Please verify that Home Assistant is connected to the internet, check your logs and file an issue.",
-      "invalid_auth": "The account doesn't exist or verification failed.",
-      "invalid_email": "Invalid email address.",
-      "invalid_code": "Invalid verification code.",
-      "unknown": "An unknown error occured. Please check your logs and file an issue."
+      "cannot_connect": "The connection to bpost failed. Please verify that Home Assistant is connected to the internet.",
+      "invalid_auth": "The account does not exist or the password is incorrect.",
+      "invalid_login": "Enter both an email address and password.",
+      "unknown": "An unknown error occurred. Please check the logs."
     },
     "abort": {
       "already_configured": "This account has already been configured.",

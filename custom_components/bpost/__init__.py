@@ -4,13 +4,15 @@ from __future__ import annotations
 import logging
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_EMAIL, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry
 
 from .bpost_entry_data import BpostEntryData
-from .const import DOMAIN
+from .const import CONF_PASSWORD, DOMAIN
 
-PLATFORMS: list[str] = ["sensor", "binary_sensor", "camera"]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -22,7 +24,10 @@ async def async_setup(hass: HomeAssistant, config: dict):
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up bpost from a config entry."""
-    entry_data = BpostEntryData(data=entry.data, hass=hass, logger=_LOGGER)
+    if CONF_EMAIL not in entry.data or CONF_PASSWORD not in entry.data:
+        raise ConfigEntryAuthFailed("bpost credentials need to be re-entered")
+
+    entry_data = BpostEntryData(entry=entry, hass=hass, logger=_LOGGER)
     hass.data[DOMAIN][entry.entry_id] = entry_data
 
     def update_callback() -> None:
@@ -31,7 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entity_ids = [entity.unique_id for entity in entities]
         current: list[str] = []
 
-        for platform_key, platform_data in entry_data.coordinator.data.items():
+        for platform_key, platform_data in (entry_data.coordinator.data or {}).items():
             for sensor_id, _sensor_data in platform_data.items():
                 current.append(f"{DOMAIN}_{platform_key}_{sensor_id}")
 
@@ -44,7 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry_data.coordinator.async_add_listener(update_callback)
 
     await entry_data.coordinator.async_config_entry_first_refresh()
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
