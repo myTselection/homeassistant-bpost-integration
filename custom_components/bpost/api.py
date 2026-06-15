@@ -188,19 +188,33 @@ class BpostWebApi:
 
     async def async_fetch_parcels(self) -> list[Parcel]:
         """Fetch parcels from Mijn bpost."""
-        if not self._logged_in:
-            await self.async_login()
-
-        html, url = await self._async_get_text(MIJN_BPOST_URL)
-        if _is_login_page(html, url):
-            self._logged_in = False
-            raise BpostAuthenticationError("bpost session expired")
+        html = await self._async_fetch_mijn_bpost_html()
 
         profile_postal_code = parse_profile_postal_code(html)
         parcels = parse_parcels(html)
         for parcel in parcels:
             parcel.postal_code = parcel.postal_code or profile_postal_code
         return await self._async_enrich_parcels(parcels)
+
+    async def _async_fetch_mijn_bpost_html(self) -> str:
+        """Fetch Mijn bpost HTML, refreshing an expired session once."""
+        if not self._logged_in:
+            await self.async_login()
+
+        html, url = await self._async_get_text(MIJN_BPOST_URL)
+        if not _is_login_page(html, url):
+            return html
+
+        _LOGGER.debug("bpost session expired, refreshing login session")
+        self._logged_in = False
+        await self.async_login()
+
+        html, url = await self._async_get_text(MIJN_BPOST_URL)
+        if _is_login_page(html, url):
+            self._logged_in = False
+            raise BpostAuthenticationError("bpost session expired")
+
+        return html
 
     async def _async_enrich_parcels(self, parcels: list[Parcel]) -> list[Parcel]:
         """Fetch public tracking details for every parcel where possible."""
